@@ -1,4 +1,23 @@
-# LightSANs
+# LightSANs wiht Dynamic Top-k Interest Allocation
+This fork introduces a dynamic interest allocation mechanism within LightSANs to further improve its adaptability and performance. This fork implemented as part of the SKKU Recommender Systems final project. The key enhancements include: The key enhancements include:
+
+1. Complexity-Based Gating:
+We implement a gating module (g(u)) that leverages user-specific complexity scores—derived from entropy and variance metrics—to determine which latent interests (k) should be activated for each user. By dynamically assigning a subset of interests, the model can better capture individual user preferences.
+
+2. Thresholding and Sparsity Control:
+A threshold is applied to the gating vector to ensure only interests above a certain activation level remain. This step promotes sparsity and prevents unnecessary complexity, helping to mitigate overfitting and focus on the most relevant interests.
+
+3. Consistent Application Across Training, Validation, and Testing:
+The dynamic k allocation logic (including complexity scoring and thresholding) is uniformly applied during training, validation, and testing. This ensures that the performance improvements observed during validation are more likely to generalize to the test set.
+
+4. Regularization and Early Stopping:
+To address potential overfitting that can arise from increased model complexity, we recommend fine-tuning hyperparameters and enabling early stopping (via stopping_step and adjusting valid_metric) to stabilize training and enhance generalization.
+
+With these modifications, the model can flexibly adjust the number of active interests per user, potentially improving metrics like NDCG@10 and Hit@10, while maintaining a balance between model complexity and generalization performance.
+
+<br>
+
+# Original Work : LightSANs
 This is our Pytorch implementation for our SIGIR 2021 short paper:
 > Xinyan Fan, Zheng Liu, Jianxun Lian, Wayne Xin Zhao, Xing Xie, and Ji-Rong Wen (2021). "Lighter and Better: Low-Rank Decomposed Self-Attention Networks for Next-Item Recommendation." In SIGIR 2021.
 [PDF](https://www.microsoft.com/en-us/research/uploads/prod/2021/05/LighterandBetter_Low-RankDecomposedSelf-AttentionNetworksforNext-ItemRecommendation.pdf)

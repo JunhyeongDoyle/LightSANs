@@ -9,6 +9,16 @@
 # @Author : Yujie Lu, Xingyu Pan, Zhichao Feng, Hui Wang
 # @Email  : yujielu1998@gmail.com, panxy@ruc.edu.cn, fzcbupt@gmail.com, hui.wang@ruc.edu.cn
 
+
+"""
+2024. 12. 11.
+code modified by jhpark
+SKKU Recommender System Final Project 
+
+implementation for dynamic k selection
+"""
+
+
 """
 recbole.model.layers
 #############################
@@ -341,14 +351,39 @@ class ItemToInterestAggregation(nn.Module):
         super().__init__()
         self.k_interests = k_interests # k latent interests
         self.theta = nn.Parameter(torch.randn([hidden_size, k_interests]))
-        
+    """
     def forward(self, input_tensor): # [B, L, d] -> [B, k, d]
         D_matrix = torch.matmul(input_tensor, self.theta) #[B, L, k]
         D_matrix = nn.Softmax(dim=-2)(D_matrix)
         result = torch.einsum('nij, nik -> nkj', input_tensor, D_matrix) # #[B, k, d]
 
         return result
+    """
+    def forward(self, input_tensor, g=None):
+        # input_tensor: [B, L, d]
 
+        # D_matrix: [B, L, K_max]
+        D_matrix = torch.matmul(input_tensor, self.theta)
+
+        if g is not None:
+            # g: [B, K_max]
+            # D_matrix 각 배치에 대해 k 차원에 g 곱
+            # reshape g: [B, 1, K_max] to broadcast
+            g_ = g.unsqueeze(1)  # [B, 1, K_max]
+            D_matrix = D_matrix * g_
+        
+        # Softmax over L dimension(-2): 현재 구현에서는 dim=-2, 즉 L 차원에 대해 softmax
+        # 주의: g를 곱했기 때문에 k 축 가중화가 됨. 필요하다면 k축에도 처리를 할 수 있으나
+        # 여기서는 간단히 L에 대해 softmax 그대로 사용.
+        D_matrix = nn.Softmax(dim=-2)(D_matrix)
+        
+        # result = [B, k, d]
+        # torch.einsum('bld,blk->bkd')
+        # 여기서 k는 K_max지만 g를 통해 사실상 일부만 활성화되는 효과
+        # g 값이 작은 k는 contribution이 적어짐
+        result = torch.einsum('bld,blk->bkd', input_tensor, D_matrix)
+        return result
+    
 class LightMultiHeadAttention(nn.Module):
     def __init__(self, n_heads, k_interests, hidden_size, seq_len, hidden_dropout_prob, attn_dropout_prob, layer_norm_eps):
         super(LightMultiHeadAttention, self).__init__()
@@ -356,6 +391,12 @@ class LightMultiHeadAttention(nn.Module):
             raise ValueError(
                 "The hidden size (%d) is not a multiple of the number of attention "
                 "heads (%d)" % (hidden_size, n_heads))
+
+        self.K_max = k_interests
+        self.gate_mlp = nn.Sequential(
+            nn.Linear(1, self.K_max),
+            nn.Sigmoid()  # 각 k에 대한 게이트 값
+        )   
 
         self.num_attention_heads = n_heads
         self.attention_head_size = int(hidden_size / n_heads)
@@ -387,16 +428,31 @@ class LightMultiHeadAttention(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def forward(self, input_tensor, pos_emb):
-        # linear map
+    def forward(self, input_tensor, pos_emb, complexity_score):
+        # complexity_score: [B]
+        #B = input_tensor.size(0)
+        g = self.gate_mlp(complexity_score.unsqueeze(1))  # [B, K_max]
+
+        # threshold 설정 예: 0.1 이하인 경우 해당 축 비활성화
+        threshold = 0.2
+        # mask를 만들어 g값이 threshold 이하인 것은 0으로 만든다
+        g = torch.where(g > threshold, g, torch.zeros_like(g))
+
+        # linear layer 
         mixed_query_layer = self.query(input_tensor)
         mixed_key_layer = self.key(input_tensor)
         mixed_value_layer = self.value(input_tensor)
 
+        # g를 이용해 attpooling_key, attpooling_value 호출
+        key_layer = self.attpooling_key(mixed_key_layer, g)  # g 반영된 key_layer
+        value_layer = self.attpooling_value(mixed_value_layer, g) # g 반영된 value_layer
+ 
         # low-rank decomposed self-attention: relation of items
         query_layer = self.transpose_for_scores(mixed_query_layer)
-        key_layer = self.transpose_for_scores(self.attpooling_key(mixed_key_layer))
-        value_layer = self.transpose_for_scores(self.attpooling_value(mixed_value_layer))
+
+        # 여기서 key_layer, value_layer에 transpose_for_scores 적용
+        key_layer = self.transpose_for_scores(key_layer)   # [B, heads, K_max, d_per_head]
+        value_layer = self.transpose_for_scores(value_layer)
 
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
@@ -427,7 +483,7 @@ class LightMultiHeadAttention(nn.Module):
         hidden_states = self.out_dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
 
-        return hidden_states
+        return hidden_states, g
 
 class FeedForward(nn.Module):
     """
@@ -504,10 +560,12 @@ class LightTransformerLayer(nn.Module):
         self.feed_forward = FeedForward(hidden_size, intermediate_size,
                                          hidden_dropout_prob, hidden_act, layer_norm_eps)
 
-    def forward(self, hidden_states, pos_emb):
-        attention_output = self.multi_head_attention(hidden_states, pos_emb)
+    def forward(self, hidden_states, pos_emb, complexity_score=None):
+        # multi_head_attention이 이제 (hidden_states, g)를 반환
+        attention_output, g = self.multi_head_attention(hidden_states, pos_emb, complexity_score)
         feedforward_output = self.feed_forward(attention_output)
-        return feedforward_output
+        # feedforward_output와 함께 g도 반환
+        return feedforward_output, g
 
 
 class LightTransformerEncoder(nn.Module):
@@ -542,7 +600,8 @@ class LightTransformerEncoder(nn.Module):
         self.layer = nn.ModuleList([copy.deepcopy(layer)
                                     for _ in range(n_layers)])
 
-    def forward(self, hidden_states, pos_emb, output_all_encoded_layers=True):
+    # Use complexity score 
+    def forward(self, hidden_states, pos_emb, complexity_score=None, output_all_encoded_layers=True):
         """
         Args:
             hidden_states (torch.Tensor): the input of the TrandformerEncoder
@@ -555,13 +614,15 @@ class LightTransformerEncoder(nn.Module):
 
         """
         all_encoder_layers = []
+        g = None
         for layer_module in self.layer:
-            hidden_states = layer_module(hidden_states, pos_emb)
+            hidden_states, g = layer_module(hidden_states, pos_emb, complexity_score)
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
         if not output_all_encoded_layers:
             all_encoder_layers.append(hidden_states)
-        return all_encoder_layers
+        # 마지막 layer에서 얻은 g 반환
+        return all_encoder_layers, g
 
 class MultiHeadAttention(nn.Module):
     """
