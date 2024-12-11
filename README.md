@@ -15,6 +15,8 @@ To address potential overfitting that can arise from increased model complexity,
 
 With these modifications, the model can flexibly adjust the number of active interests per user, potentially improving metrics like NDCG@10 and Hit@10, while maintaining a balance between model complexity and generalization performance.
 
+<img src="./dynamick.png" width = "500px" align=center />
+
 <br>
 
 # Original Work : LightSANs
