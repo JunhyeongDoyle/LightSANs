@@ -1,4 +1,4 @@
-# LightSANs wiht Dynamic Top-k Interest Allocation
+# LightSANs with Dynamic Top-k Interest Allocation
 This fork introduces a dynamic interest allocation mechanism within LightSANs to further improve its adaptability and performance. This fork implemented as part of the SKKU Recommender Systems final project. The key enhancements include: The key enhancements include:
 
 1. Complexity-Based Gating:
